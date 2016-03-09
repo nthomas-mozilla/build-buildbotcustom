@@ -544,44 +544,6 @@ def makeMHFactory(config, pf, mh_cfg=None, extra_args=None, **kwargs):
     return factory
 
 
-def makeBundleBuilder(config, name):
-    stageBasePath = '%s/%s' % (config['stage_base_path'],
-                               config['platforms']['linux']['stage_product'])
-    bundle_factory = ScriptFactory(
-        config['hgurl'] + config['build_tools_repo_path'],
-        'scripts/bundle/hg-bundle.sh',
-        interpreter='bash',
-        script_timeout=3600,
-        script_maxtime=3600,
-        extra_args=[
-            name,
-            config['repo_path'],
-            config['stage_server'],
-            config['stage_username'],
-            stageBasePath,
-            config['stage_ssh_key'],
-        ],
-    )
-    slaves = set()
-    for p in sorted(config['platforms'].keys()):
-        slaves.update(set(config['platforms'][p]['slaves']))
-    bundle_builder = {
-        'name': '%s hg bundle' % name,
-        'slavenames': list(slaves),
-        'builddir': '%s-bundle' % (name,),
-        'slavebuilddir': normalizeName('%s-bundle' % (name,)),
-        'factory': bundle_factory,
-        'category': name,
-        'nextSlave': _nextAWSSlave_sort,
-        'properties': {'slavebuilddir': normalizeName('%s-bundle' % (name,)),
-                       'branch': name,
-                       'platform': None,
-                       'product': 'firefox',
-                       }
-    }
-    return bundle_builder
-
-
 def generateTestBuilder(config, branch_name, platform, name_prefix,
                         build_dir_prefix, suites_name, suites,
                         mochitestLeakThreshold, crashtestLeakThreshold,
@@ -1065,11 +1027,6 @@ def generateBranchObjects(config, name, secrets=None):
                config.get('enable_hsts_update', False) or \
                config.get('enable_hpkp_update', False):
                 weeklyBuilders.append('%s periodic file update' % base_name)
-
-    if config['enable_weekly_bundle']:
-        bundle_builder = makeBundleBuilder(config, name)
-        branchObjects['builders'].append(bundle_builder)
-        weeklyBuilders.append(bundle_builder['name'])
 
     # Try Server notifier
     if config.get('enable_mail_notifier'):
@@ -2023,6 +1980,7 @@ def generateBranchObjects(config, name, secrets=None):
                 tooltool_manifest_src=pf.get('tooltool_manifest_src'),
                 tooltool_script=pf.get('tooltool_script'),
                 tooltool_url_list=config.get('tooltool_url_list', []),
+                platform=platform,
             )
             mozilla2_valgrind_builder = {
                 'name': '%s valgrind' % pf['base_name'],
@@ -2147,9 +2105,9 @@ def generateTalosBranchObjects(branch, branch_config, PLATFORMS, SUITES,
         talos_slave_platforms = branch_config['platforms'][platform].get(
             'talos_slave_platforms', platform_config.get('talos_slave_platforms', []))
 
-        # Map of # of test runs to builder names
-        talos_builders = {}
-        talos_pgo_builders = {}
+        # Mapping of skip configuration to talos builder names
+        talos_builders = collections.defaultdict(list)
+        talos_pgo_builders = collections.defaultdict(list)
 
         try_default = True
         if not branch_config['platforms'][platform].get('try_by_default', True):
@@ -2173,6 +2131,12 @@ def generateTalosBranchObjects(branch, branch_config, PLATFORMS, SUITES,
                     '%s_tests' % suite]
                 if tests == 0 or slave_platform not in platforms:
                     continue
+                assert tests == 1
+
+                skipconfig = None
+                if (slave_platform in branch_config['platforms'][platform] and
+                   'skipconfig' in branch_config['platforms'][platform][slave_platform]):
+                    skipconfig = branch_config['platforms'][platform][slave_platform]['skipconfig'].get(('talos', suite))
 
                 # We only want to append '-Non-PGO' to platforms that
                 # also have PGO builds.
@@ -2239,8 +2203,7 @@ def generateTalosBranchObjects(branch, branch_config, PLATFORMS, SUITES,
                 pgo_only_suites = set(branch_config.get('pgo_only_suites', []))
 
                 if suite not in pgo_only_suites:
-                    talos_builders.setdefault(
-                        tests, []).append(builder['name'])
+                    talos_builders[skipconfig].append(builder['name'])
                     branchObjects['builders'].append(builder)
 
                 if create_pgo_builders:
@@ -2273,8 +2236,7 @@ def generateTalosBranchObjects(branch, branch_config, PLATFORMS, SUITES,
                     if not merge:
                         nomergeBuilders.add(pgo_builder['name'])
                     branchObjects['builders'].append(pgo_builder)
-                    talos_pgo_builders.setdefault(
-                        tests, []).append(pgo_builder['name'])
+                    talos_pgo_builders[1].append(pgo_builder['name'])
 
             # Skip talos only platforms, not active platforms, branches
             # with disabled unittests
@@ -2502,10 +2464,12 @@ def generateTalosBranchObjects(branch, branch_config, PLATFORMS, SUITES,
 
         def makeTalosScheduler(builders, pgo=False):
             schedulers = []
-            for tests, builder_names in builders.iteritems():
+            for skipconfig, builder_names in builders.iteritems():
                 extra_args = {}
-                assert tests == 1
                 scheduler_class = Scheduler
+                skipcount = 0
+                skiptimeout = 0
+
                 if pgo:
                     name = 'tests-%s-%s-pgo-talos' % (branch, platform)
                     scheduler_branch = '%s-%s-pgo-talos' % (branch, platform)
@@ -2519,6 +2483,14 @@ def generateTalosBranchObjects(branch, branch_config, PLATFORMS, SUITES,
                     extra_args['prettyNames'] = prettyNames
                     extra_args['talosSuites'] = SUITES.keys()
                     extra_args['buildbotBranch'] = branch
+                elif isinstance(skipconfig, tuple):
+                    skipcount, skiptimeout = skipconfig
+                    scheduler_class = EveryNthScheduler
+                    extra_args['n'] = skipcount
+                    extra_args['idleTimeout'] = skiptimeout
+                    name += "-%s-%s" % (skipcount, skiptimeout)
+                    for b in builder_names:
+                        builderMergeLimits[b] = skipcount
 
                 s = scheduler_class(
                     name=name,
@@ -2690,8 +2662,8 @@ def generateSpiderMonkeyObjects(project, config, SLAVES):
             extra_args += ['--platform', platform]  # distinguish win64
             extra_args += mirrorAndBundleArgs(bconfig)
             extra_args += [variant]
-            for server in bconfig.get('tooltool_url_list', []):
-                extra_args += ['--ttserver', server]
+            extra_args += ['--ttserver',
+                           'https://api.pub.build.mozilla.org/tooltool/']
 
             f = ScriptFactory(
                 config['scripts_repo'],
@@ -2787,75 +2759,6 @@ def generateSpiderMonkeyObjects(project, config, SLAVES):
         'schedulers': schedulers,
     }
 
-
-def generateJetpackObjects(config, SLAVES):
-    builders = []
-    project_branch = os.path.basename(config['repo_path'])
-    for branch in config['branches']:
-        for platform in config['platforms'].keys():
-            slaves = SLAVES[platform]
-            jetpack_tarball = WithProperties(
-                "%s/%s/archive/%%(%s:~tip)s.tar.bz2" % (config['hgurl'],
-                                                        config['repo_path'],
-                                                        'revision')
-            )
-            ftp_url = config['ftp_url']
-            types = ['opt']
-            if config['platforms'][platform].get('debug'):
-                types.append('debug')
-            for type_ in types:
-                if type_ == 'debug':
-                    ftp_url = ftp_url + "-debug"
-                f = ScriptFactory(
-                    config['scripts_repo'],
-                    'buildfarm/utils/run_jetpack.py',
-                    extra_args=(
-                        "-p", platform, "-t", jetpack_tarball, "-b", branch,
-                        "-f", ftp_url, "-e", config['platforms'][platform]['ext'],),
-                    interpreter='python',
-                    log_eval_func=rc_eval_func({1: WARNINGS, 2: FAILURE,
-                                                4: EXCEPTION, 5: RETRY}),
-                    reboot_command=['python',
-                                    'scripts/buildfarm/maintenance/count_and_reboot.py',
-                                    '-f', './reboot_count.txt',
-                                    '-n', '0',
-                                    '-z'],
-                )
-
-                builder = {'name': 'jetpack-%s-%s-%s' % (branch, platform, type_),
-                           'builddir': 'jetpack-%s-%s-%s' % (branch, platform, type_),
-                           'slavebuilddir': 'test',
-                           'slavenames': slaves,
-                           'factory': f,
-                           'category': 'jetpack',
-                           'properties': {'branch': project_branch, 'platform': platform, 'product': 'jetpack'},
-                           'env': MozillaEnvironments.get("%s" % config['platforms'][platform].get('env'), {}).copy(),
-                           }
-                builders.append(builder)
-                nomergeBuilders.add(builder['name'])
-
-    # Set up polling
-    poller = HgPoller(
-        hgURL=config['hgurl'],
-        branch=config['repo_path'],
-        pollInterval=5 * 60,
-    )
-
-    # Set up scheduler
-    scheduler = Scheduler(
-        name="jetpack",
-        branch=config['repo_path'],
-        treeStableTimer=None,
-        builderNames=[b['name'] for b in builders],
-    )
-
-    return {
-        'builders': builders,
-        'change_source': [poller],
-        'schedulers': [scheduler],
-    }
-
-
 def generateProjectObjects(project, config, SLAVES, all_builders=None):
     builders = []
     schedulers = []
@@ -2872,11 +2775,6 @@ def generateProjectObjects(project, config, SLAVES, all_builders=None):
     if project.startswith('fuzzing'):
         fuzzingObjects = generateFuzzingObjects(config, SLAVES)
         buildObjects = mergeBuildObjects(buildObjects, fuzzingObjects)
-
-    # Jetpack
-    elif project.startswith('jetpack'):
-        jetpackObjects = generateJetpackObjects(config, SLAVES)
-        buildObjects = mergeBuildObjects(buildObjects, jetpackObjects)
 
     # Spidermonkey
     elif project.startswith('spidermonkey'):

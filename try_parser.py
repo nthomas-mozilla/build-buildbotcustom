@@ -19,14 +19,16 @@ def testSuiteMatches(v, u):
         return v.startswith('jittest')
     elif u == 'mochitest-debug':
         return v.startswith('mochitest-debug-')
-    elif u in ('mochitest-o', 'mochitest-a11y'):
-        return re.search('mochitest-o', v)
+    elif u in ('mochitest-o'):
+        return v in ['mochitest-other', 'mochitest-a11y', 'mochitest-chrome']
     elif u == 'xpcshell':
         return v.startswith('xpcshell')
     elif u == 'robocop':
         return v.startswith(u)
     elif u == 'mochitest-dt':
         return v.startswith('mochitest-devtools-chrome')
+    elif u == 'mochitest-e10s-devtools-chrome' or u == 'mochitest-e10s-dt':
+        return v.startswith('mochitest-e10s-devtools-chrome')
     elif u == 'mochitest-gl':
         return v.startswith('mochitest-gl')
     elif u.startswith('mochitest-dt'):
@@ -38,6 +40,13 @@ def testSuiteMatches(v, u):
     elif u.startswith('mochitest-bc'):
         # mochitest-bc1 and mochitest-bc-1 should run mochitest-browser-chrome-1
         return v == re.sub(r"bc-?", "browser-chrome-", u)
+    elif u in ('mochitest-e10s-bc', 'mochitest-e10s-browser'):
+        return v.startswith('mochitest-e10s-browser-chrome')
+    elif u.startswith('mochitest-e10s-bc'):
+        # mochitest-e10s-bc1 and mochitest-e10s-bc-1 should run mochitest-e10s-browser-chrome-1
+        return v == re.sub(r"bc-?", "browser-chrome-", u)
+    elif u in ('crashtests', 'crashtest'):
+        return v.startswith('crashtest')
     elif u in ('reftests', 'reftest'):
         return v.startswith('reftest') or v.startswith('plain-reftest')
     elif u in ('web-platform-tests', 'web-platform-test'):
@@ -68,7 +77,7 @@ def processMessage(message):
             line = line.strip().split('try: ', 1)
             # Allow spaces inside of [filter expressions]
             return re.findall(r'(?:\[.*?\]|\S)+', line[1])
-    return [""]
+    return None
 
 
 def expandPlatforms(user_platforms, buildTypes):
@@ -305,7 +314,12 @@ def TryParser(
                         dest='talos',
                         help='provide a list of talos tests, or specify all (default is None)')
 
-    (options, unknown_args) = parser.parse_known_args(processMessage(message))
+    message = processMessage(message)
+    if message is None:
+        # no try syntax found, don't schedule anything
+        return []
+
+    (options, unknown_args) = parser.parse_known_args(message)
 
     # Build options include a possible override of 'all' to get a buildset
     # that matches m-c

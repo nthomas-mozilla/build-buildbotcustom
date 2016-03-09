@@ -220,6 +220,8 @@ def parse_make_upload(rc, stdout, stderr):
             retval['completeMarUrl'] = m
         elif m.endswith('.mar') and '.partial.' in m:
             retval['partialMarUrl'] = m
+        elif '.sdk.' in m:
+            retval['sdkUrl'] = m
         elif m.find('geckoview') >= 0:
             pass
         elif m.find('cppunit') >= 0:
@@ -379,11 +381,20 @@ class TooltoolMixin(object):
         ]
         if self.tooltool_script:
             command.extend(self.tooltool_script)
-        self.addStep(ShellCommand(
+
+        # include relengapi authentication information
+        relengapi_tok = '/builds/relengapi.tok'
+        if self.platform.startswith('win'):
+            relengapi_tok = r'c:\builds\relengapi.tok'
+        command.extend(['--authentication-file', relengapi_tok])
+
+        self.addStep(MockCommand(
             name='run_tooltool',
             command=command,
             env=self.env,
             haltOnFailure=True,
+            mock=self.use_mock,
+            target=self.mock_target,
             **kwargs
         ))
 
@@ -1323,7 +1334,7 @@ class MercurialBuildFactory(MozillaBuildFactory, MockMixin, TooltoolMixin):
                      command=['cat', '.mozconfig'],
                      ))
         if self.tooltool_manifest_src:
-            self.addTooltoolStep()
+            self.addTooltoolStep(workdir='build')
 
     def addDoBuildSteps(self):
         workdir = WithProperties('%(basedir)s/build')
@@ -4640,14 +4651,6 @@ class ScriptFactory(RequestSortingBuildFactory, TooltoolMixin):
                 workdir='.',
                 flunkOnFailure=False,
             ))
-        if self.tooltool_manifest_src:
-            self.addStep(SetProperty(
-                name='set_toolsdir',
-                command=['bash', '-c', 'pwd'],
-                property='toolsdir',
-                workdir='scripts',
-            ))
-            self.addTooltoolStep()
         self.runScript()
         self.addCleanupSteps()
         self.reboot()
@@ -4693,6 +4696,15 @@ class ScriptFactory(RequestSortingBuildFactory, TooltoolMixin):
                 packages=self.mock_packages,
                 timeout=2700,
             ))
+
+        if self.tooltool_manifest_src:
+            self.addStep(SetProperty(
+                name='set_toolsdir',
+                command=['bash', '-c', 'pwd'],
+                property='toolsdir',
+                workdir='scripts',
+            ))
+            self.addTooltoolStep(workdir='build')
 
     def runScript(self, env=None):
         if not env:
