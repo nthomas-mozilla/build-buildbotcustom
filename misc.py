@@ -2961,7 +2961,6 @@ def mh_l10n_scheduler_name(config, platform):
 
 def mh_l10n_builder_names(config, platform, branch, is_nightly):
     # let's check if we need to create builders for this config/platform
-    names = []
     pf = config['platforms'][platform]
     product_name = pf['product_name']
     name = '%s %s %s l10n' % (product_name, branch, platform)
@@ -2971,9 +2970,10 @@ def mh_l10n_builder_names(config, platform, branch, is_nightly):
     repacks = pf['mozharness_desktop_l10n']
 
     l10n_chunks = repacks['l10n_chunks']
-    for chunk in range(1, l10n_chunks + 1):
-        builder_name = "%s-%s" % (name, chunk)
-        names.append(builder_name)
+    if l10n_chunks == 1:
+        names = [name]
+    else:
+        names = ["%s-%s" % (name, chunk) for chunk in range(1, l10n_chunks + 1)]
     return names
 
 
