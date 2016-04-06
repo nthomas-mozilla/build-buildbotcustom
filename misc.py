@@ -2899,9 +2899,9 @@ def mh_l10n_builders(config, platform, branch, secrets, is_nightly):
         this_chunk += 1
         builderName = bn
         builddir = mh_l10n_builddir_from_builder_name(bn, product_name)
-        extra_args = ['--branch-config', branch_config,
+        extra_args = ['--environment-config', environment_config,
+                      '--branch-config', branch_config,
                       '--platform-config', platform_config,
-                      '--environment-config', environment_config,
                       '--balrog-config', balrog_config,
                       '--total-chunks', str(l10n_chunks),
                       '--this-chunk', str(this_chunk)]
