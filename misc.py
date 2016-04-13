@@ -2902,9 +2902,10 @@ def mh_l10n_builders(config, platform, branch, secrets, is_nightly):
         extra_args = ['--environment-config', environment_config,
                       '--branch-config', branch_config,
                       '--platform-config', platform_config,
-                      '--balrog-config', balrog_config,
                       '--total-chunks', str(l10n_chunks),
                       '--this-chunk', str(this_chunk)]
+        if config.get('updates_enabled', False):
+            extra_args.extend(['--balrog-config', balrog_config])
         signing_servers = secrets.get(pf.get('nightly_signing_servers'))
         factory = SigningScriptFactory(
             signingServers=signing_servers,
