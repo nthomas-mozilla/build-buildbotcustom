@@ -12,15 +12,15 @@ from buildbot.process.buildstep import regex_log_evaluator
 from buildbot.scheduler import Scheduler, Dependent
 from buildbot.status.mail import MailNotifier
 from buildbot.steps.trigger import Trigger
-from buildbot.steps.shell import WithProperties
 from buildbot.status.builder import Results
 from buildbot.process.factory import BuildFactory
 
+import buildbotcustom.common
 import release.platforms
 import release.paths
-import buildbotcustom.common
 import build.paths
 import release.info
+reload(buildbotcustom.common)
 reload(release.platforms)
 reload(release.paths)
 reload(build.paths)
@@ -1781,7 +1781,8 @@ def generateReleasePromotionBuilders(branch_config, branch_name, product,
         mh_cfg = {
             "script_name": "scripts/desktop_l10n.py",
             "extra_args": [
-                "--branch-config", "single_locale/%s.py" % branch_name,
+                "--branch-config", "single_locale/%s.py" % branch_config.get('single_locale_branch_config',
+                                                                             branch_name),
                 "--platform-config", "single_locale/%s.py" % platform,
                 "--environment-config", env_config,
                 "--balrog-config", balrog_config,
@@ -1813,7 +1814,7 @@ def generateReleasePromotionBuilders(branch_config, branch_name, product,
     bouncer_mh_cfg = {
         "script_name": "scripts/bouncer_submitter.py",
         "extra_args": [
-             "-c",  branch_config['bouncer_submitter_config'],
+             "-c",  branch_config['bouncer_submitter_config'][product],
              "--credentials-file", "oauth.txt",
              "--bouncer-api-prefix", branch_config['tuxedoServerUrl'],
              "--repo", branch_config['repo_path'],
@@ -1835,55 +1836,48 @@ def generateReleasePromotionBuilders(branch_config, branch_name, product,
         "factory": bouncer_submitter_factory,
         "category": category_name,
         "properties": {
-            "branch": branch_config["bouncer_branch"],
+            "branch": branch_name,
             "platform": None,
             "product": product,
         }
     }
     builders.append(bouncer_builder)
 
-    uv_fmt_template = "release-{branch}_{platform}_update_verify_{channel}_{chunk}"
+    uv_fmt_template = "release-{branch}_{product}_{platform}_update_verify"
     for platform in branch_config.get("release_platforms"):
         pf = branch_config["platforms"][platform]
-        t_chunks = branch_config.get("update_verify_chunks", 6)
-        for channel in branch_config.get('release_channels'):
-            for n in range(1, t_chunks + 1):
-                uv_buildername = uv_fmt_template.format(
-                    branch=branch_name,
-                    platform=platform,
-                    channel=channel,
-                    chunk=n,
-                    chunks=t_chunks,
-                    product=branch_config.get("product_name"),
-                    )
-                uv_factory = ScriptFactory(
-                    scriptRepo=tools_repo,
-                    interpreter='bash',
-                    scriptName='scripts/release/updates/chunked-verify.sh',
-                    extra_args=["UNUSED", "UNUSED", str(t_chunks), str(n)],
-                    env=pf['env'],
-                )
+        uv_buildername = uv_fmt_template.format(
+            branch=branch_name,
+            platform=platform,
+            product=product,
+            )
+        uv_factory = ScriptFactory(
+            scriptRepo=tools_repo,
+            interpreter='bash',
+            scriptName='scripts/release/updates/chunked-verify.sh',
+            env=pf['env'],
+        )
 
-                uv_builder = {
-                    'name': uv_buildername,
-                    'slavenames': pf['slaves'],
-                    'builddir': uv_buildername,
-                    'slavebuilddir': normalizeName(uv_buildername),
-                    'factory': uv_factory,
-                    'category': category_name,
-                    'env': pf['env'],
-                    'properties': {
-                          "branch": branch_name,
-                          "platform": platform,
-                          "product": pf["product_name"],
-                      }
+        uv_builder = {
+            'name': uv_buildername,
+            'slavenames': pf['slaves'],
+            'builddir': uv_buildername,
+            'slavebuilddir': normalizeName(uv_buildername),
+            'factory': uv_factory,
+            'category': category_name,
+            'env': pf['env'],
+            'properties': {
+                    "branch": branch_name,
+                    "platform": platform,
+                    "product": product,
                 }
-                builders.append(uv_builder)
+        }
+        builders.append(uv_builder)
 
     updates_mh_cfg = {
         "script_name": "scripts/release/updates.py",
         "extra_args": [
-             "-c",  branch_config['updates_config'],
+             "-c",  branch_config['updates_config'][product],
         ]
     }
     updates_buildername = "release-{branch}-{product}_updates".format(
@@ -1911,7 +1905,7 @@ def generateReleasePromotionBuilders(branch_config, branch_name, product,
     version_bump_mh_cfg = {
         "script_name": "scripts/release/postrelease_version_bump.py",
         "extra_args": [
-             "-c",  branch_config['postrelease_version_bump_config'],
+             "-c",  branch_config['postrelease_version_bump_config'][product],
         ]
     }
     version_bump_buildername = "release-{branch}-{product}_version_bump".format(
@@ -1935,6 +1929,35 @@ def generateReleasePromotionBuilders(branch_config, branch_name, product,
         }
     }
     builders.append(version_bump_builder)
+
+    # bouncer aliases
+    bouncer_aliases_mh_cfg = {
+        "script_name": "scripts/release/postrelease_bouncer_aliases.py",
+        "extra_args": [
+             "-c",  branch_config['postrelease_bouncer_aliases_config'][product],
+        ]
+    }
+    bouncer_aliases_buildername = "release-{branch}-{product}_bouncer_aliases".format(
+        branch=branch_name, product=product)
+    # Explicitly define pf using the slave platform (linux64 in this case)
+    bouncer_aliases_submitter_factory = makeMHFactory(
+        config=branch_config, pf=branch_config["platforms"]['linux64'],
+        mh_cfg=bouncer_aliases_mh_cfg, use_credentials_file=True)
+
+    bouncer_aliases_builder = {
+        "name": bouncer_aliases_buildername,
+        "slavenames": branch_config["platforms"]["linux64"]["slaves"],
+        "builddir": bouncer_aliases_buildername,
+        "slavebuilddir": normalizeName(bouncer_aliases_buildername),
+        "factory": bouncer_aliases_submitter_factory,
+        "category": category_name,
+        "properties": {
+            "branch": branch_name,
+            "platform": None,
+            "product": product,
+        }
+    }
+    builders.append(bouncer_aliases_builder)
 
     # checksums
     checksums_buildername = "release-{branch}-{product}_chcksms".format(
@@ -1971,6 +1994,36 @@ def generateReleasePromotionBuilders(branch_config, branch_name, product,
         }
     }
     builders.append(checksums_builder)
+
+    for platform in branch_config.get("partner_repacks_platforms", []):
+        buildername = "release-{branch}-{product}-{platform}_partner_repacks"
+        buildername = buildername.format(branch=branch_name, product=product,
+                                         platform=platform)
+        cfg = branch_config['partner_repack_config'][product]
+        mh_cfg = {
+            "script_name": cfg['script_name'],
+            "extra_args": cfg['extra_args'] + ["--platform", platform,
+                                               "--hgrepo", branch_config['repo_path']]
+        }
+        partner_repack_factory = makeMHFactory(
+            signingServers=secrets.get(pf.get("dep_signing_servers")),
+            config=branch_config,
+            pf=branch_config["platforms"]["macosx64"],
+            mh_cfg=mh_cfg)
+
+        builders.append({
+            'name': buildername,
+            'slavenames': branch_config['platforms']['macosx64']['slaves'],
+            'category': category_name,
+            'builddir': buildername,
+            'slavebuilddir': normalizeName(buildername),
+            'factory': partner_repack_factory,
+            'properties': {
+                'branch': branch_name,
+                'platform': platform,
+                'product': product,
+            }
+        })
 
     # Don't merge release builder requests
     nomergeBuilders.update([b['name'] for b in builders])

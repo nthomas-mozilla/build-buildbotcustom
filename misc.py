@@ -2009,6 +2009,9 @@ def generateBranchObjects(config, name, secrets=None):
 
         # -- end of per-platform loop --
 
+    # Make sure builders have the right properties
+    addBuilderProperties(branchObjects['builders'])
+
     return branchObjects
 
 
@@ -2028,11 +2031,6 @@ def _makeGenerateMozharnessTalosBuilderArgs(suite, talos_branch, platform,
         if factory_kwargs["talos_from_source_code"]:
             extra_args.append('--use-talos-json')
         scriptpath = "scripts/talos_script.py"
-    else:
-        extra_args.extend(['--talos-suite', suite,
-                           '--cfg', 'android/android_panda_talos_releng.py',
-                           '--branch-name', talos_branch])
-        scriptpath = "scripts/android_panda_talos.py"
     # add branch config specification if blobber is enabled
     if branch_config.get('blob_upload'):
         extra_args.extend(['--blob-upload-branch', talos_branch])
@@ -2116,6 +2114,8 @@ def generateTalosBranchObjects(branch, branch_config, PLATFORMS, SUITES,
             try_default = False
 
         for slave_platform in set(slave_platforms + talos_slave_platforms):
+            if slave_platform not in platform_config:
+                continue
             platform_name = platform_config[slave_platform]['name']
             # this is to handle how a platform has more than one slave
             # platform
@@ -2129,8 +2129,10 @@ def generateTalosBranchObjects(branch, branch_config, PLATFORMS, SUITES,
             for suite, talosConfig in SUITES.iteritems():
                 tests, merge, extra, platforms = branch_config[
                     '%s_tests' % suite]
-                if tests == 0 or slave_platform not in platforms:
+
+                if tests == 0 or slave_platform not in platforms or slave_platform not in talos_slave_platforms:
                     continue
+
                 assert tests == 1
 
                 skipconfig = None
@@ -2226,7 +2228,7 @@ def generateTalosBranchObjects(branch, branch_config, PLATFORMS, SUITES,
                         'name': "%s %s pgo talos %s" % (platform_name, branch, suite),
                         'slavenames': platform_config[slave_platform]['slaves'],
                         'builddir': builddir + '-pgo',
-                        'slavebuilddir': slavebuilddir + '-pgo',
+                        'slavebuilddir': slavebuilddir,
                         'factory': pgo_factory,
                         'category': branch,
                         'properties': properties,
@@ -2505,6 +2507,9 @@ def generateTalosBranchObjects(branch, branch_config, PLATFORMS, SUITES,
         # Create talos schedulers
         branchObjects['schedulers'].extend(makeTalosScheduler(talos_builders, False))
         branchObjects['schedulers'].extend(makeTalosScheduler(talos_pgo_builders, True))
+
+    # Make sure builders have the right properties
+    addBuilderProperties(branchObjects['builders'])
 
     return branchObjects
 
@@ -2960,6 +2965,7 @@ def mh_l10n_scheduler_name(config, platform):
     pf = config['platforms'][platform]
     return '%s nightly l10n' % (pf['base_name'])
 
+
 def mh_l10n_builder_names(config, platform, branch, is_nightly):
     # let's check if we need to create builders for this config/platform
     pf = config['platforms'][platform]
@@ -2978,3 +2984,33 @@ def mh_l10n_builder_names(config, platform, branch, is_nightly):
     return names
 
 
+def addBuilderProperties(builders):
+    for b in builders:
+        if not isinstance(b['factory'], ScriptFactory):
+            continue
+
+        # TODO: do the same for 'master' property?
+        if 'basedir' in b['properties']:
+            continue
+
+        if 'slavebuilddir' in b:
+            slavebuilddir = b['slavebuilddir']
+        else:
+            slavebuilddir = b['builddir']
+
+        platform = b['properties']['platform']
+
+        if platform.startswith('win') or platform.startswith('xp-'):
+            # On Windows, test slaves use C:\slave\test, but build slaves
+            # use /c/builds/moz2_slave
+            if slavebuilddir == 'test':  # TODO: This check is too fragile
+                rootdir = r'C:\slave'
+                basedir = '%s\%s' % (rootdir, slavebuilddir)
+            else:
+                rootdir = '/c/builds/moz2_slave'
+                basedir = '%s/%s' % (rootdir, slavebuilddir)
+        else:
+            rootdir = '/builds/slave'
+            basedir = '%s/%s' % (rootdir, slavebuilddir)
+
+        b['properties']['basedir'] = basedir
