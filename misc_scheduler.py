@@ -55,7 +55,7 @@ def tryChooser(s, all_changes):
 
     for c in all_changes:
         try:
-            match = re.search("try|nthomas_mozilla\.com", c.branch)
+            match = re.search("try", c.branch)
             if not match:
                 log.msg("Ignoring off-branch %s" % c.branch)
                 continue
